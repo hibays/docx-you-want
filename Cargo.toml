@@ -8,10 +8,14 @@ license = "GPL3"
 
 [dependencies]
 tempfile = "3"
-resvg = "0.22.0"
-usvg = "0.22.0"
+resvg = "0.22"
+usvg = "0.22"
 tiny-skia = "0.6.2"
-png = "0.17.5"
+png = "0.18"
 format_xml = "0.2.0"
-zip-extensions = "0.6.1"
-zip = "0.5.13"
+zip = { version = "8", default-features = false, features = [
+	"deflate",
+	"time",
+] }
+walkdir = "2"
+clap = { version = "4", features = ["derive"] }

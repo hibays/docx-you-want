@@ -1,4 +1,4 @@
-/* This file is part of docx-you-want.
+/* Typst & PDF to DOCX converter.
 
    docx-you-want is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -22,7 +22,8 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
-use zip_extensions::zip_create_from_directory;
+mod zip_utils;
+use zip_utils::{unzip_to_dir, zip_dir};
 
 #[derive(Debug)]
 pub enum Error {
@@ -30,6 +31,8 @@ pub enum Error {
     ImageError,
     InkscapeNotFound,
     PDFInvalid,
+    TypstNotFound,
+    TypstInputInvalid,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -52,8 +55,8 @@ impl From<png::EncodingError> for Error {
     }
 }
 
-impl From<zip::result::ZipError> for Error {
-    fn from(_: zip::result::ZipError) -> Error {
+impl From<zip_utils::ZipError> for Error {
+    fn from(_: zip_utils::ZipError) -> Error {
         Error::IoError
     }
 }
@@ -83,8 +86,14 @@ fn read_svg(src: &Path) -> Result<usvg::Tree> {
 fn save_png(dst: &Path, rtree: &usvg::Tree) -> Result<()> {
     let size = rtree.svg_node().size.to_screen_size();
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
-    resvg::render(rtree, usvg::FitTo::Original, tiny_skia::Transform::identity() ,pixmap.as_mut()).ok_or(Error::ImageError)?;
-    pixmap.save_png(dst)?;
+    resvg::render(
+        rtree,
+        usvg::FitTo::Original,
+        tiny_skia::Transform::identity(),
+        pixmap.as_mut(),
+    )
+    .ok_or(Error::ImageError)?;
+    let _ = pixmap.save_png(dst);
     Ok(())
 }
 
@@ -107,12 +116,13 @@ pub struct Docx {
     doc_string: String,
     rels_string: String,
     size: usvg::Size,
+    svg_only: bool,
 }
 
 impl Docx {
-    pub fn new() -> Result<Docx> {
+    pub fn new(svg_only: bool) -> Result<Docx> {
         let dir = TempDir::new()?;
-        Docx::copy_base_files(&dir)?;
+        Docx::copy_base_files(&dir, svg_only)?;
         let path = dir.path();
         let doc: PathBuf = [path.as_os_str(), OsStr::new("word/document.xml")]
             .iter()
@@ -132,16 +142,16 @@ impl Docx {
             doc_string: String::new(),
             rels_string: String::new(),
             size: usvg::Size::new(793.707, 1122.52).unwrap(),
+            svg_only,
         })
     }
-
-    fn copy_base_files(dir: &TempDir) -> Result<()> {
-        let fixtures_zip = include_bytes!("../fixtures/fixtures.zip");
-        let mut zip_path = dir.path().to_owned();
-        zip_path.push("fixtures.zip");
-        std::fs::write(&zip_path, fixtures_zip)?;
-        zip_extensions::read::zip_extract(&zip_path, &dir.path().to_owned())?;
-        remove_file(zip_path)?;
+    fn copy_base_files(dir: &TempDir, svg_only: bool) -> Result<()> {
+        let fixtures_zip: &[u8] = if svg_only {
+            include_bytes!("../fixtures/fixtures_svg_only.zip")
+        } else {
+            include_bytes!("../fixtures/fixtures.zip")
+        };
+        unzip_to_dir(fixtures_zip, dir.path())?;
         Ok(())
     }
 
@@ -155,7 +165,37 @@ impl Docx {
         if svg != svg_copy {
             copy(svg, svg_copy)?;
         }
-        self.add_to_doc(svg_copy, &png, &tree.svg_node().size);
+        self.add_to_doc(svg_copy, Some(&png), &tree.svg_node().size);
+        print!(".");
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn add_image_with_png(&mut self, svg: &Path, png_src: &Path) -> Result<()> {
+        let tree = read_svg(svg)?;
+        let png_dst = get_png_path(&self.media_dir, svg)?;
+        copy(png_src, &png_dst)?;
+        let svg_copy = &self
+            .media_dir
+            .join(Path::new(svg.file_name().ok_or(Error::IoError)?));
+        if svg != svg_copy {
+            copy(svg, svg_copy)?;
+        }
+        self.add_to_doc(svg_copy, Some(&png_dst), &tree.svg_node().size);
+        print!(".");
+        io::stdout().flush()?;
+        Ok(())
+    }
+
+    fn add_image_svg_only(&mut self, svg: &Path) -> Result<()> {
+        let tree = read_svg(svg)?;
+        let svg_copy = &self
+            .media_dir
+            .join(Path::new(svg.file_name().ok_or(Error::IoError)?));
+        if svg != svg_copy {
+            copy(svg, svg_copy)?;
+        }
+        self.add_to_doc(svg_copy, None, &tree.svg_node().size);
         print!(".");
         io::stdout().flush()?;
         Ok(())
@@ -167,9 +207,13 @@ impl Docx {
         ret
     }
 
-    fn add_to_doc(&mut self, svg: &Path, png: &Path, size: &usvg::Size) {
+    fn add_to_doc(&mut self, svg: &Path, png: Option<&Path>, size: &usvg::Size) {
         let svg_id = self.next_id();
-        let png_id = self.next_id();
+        let png_id = if png.is_some() {
+            self.next_id()
+        } else {
+            svg_id
+        };
         let svg_rid = format!("rId{}", svg_id);
         let png_rid = format!("rId{}", png_id);
         let width = px_to_emu(size.width());
@@ -233,7 +277,9 @@ impl Docx {
             }
         );
         self.add_relationship(&svg_rid, get_filename(svg));
-        self.add_relationship(&png_rid, get_filename(png))
+        if let Some(png) = png {
+            self.add_relationship(&png_rid, get_filename(png));
+        }
     }
 
     fn add_relationship(&mut self, rid: &str, filename: &str) {
@@ -247,9 +293,9 @@ impl Docx {
         )
     }
 
-    pub fn generate_docx(self, p: &PathBuf) -> Result<()> {
+    pub fn generate_docx(self, p: &Path) -> Result<()> {
         self.write_to_files()?;
-        zip_create_from_directory(p, &PathBuf::from(self.dir.path()))?;
+        zip_dir(self.dir.path(), p)?;
         Ok(())
     }
 
@@ -300,9 +346,9 @@ impl Docx {
                         Err(Error::InkscapeNotFound)
                     } else {
                         Err(Error::IoError)
-                    };
+                    }
                 }
-                Ok(output) => (output),
+                Ok(output) => output,
             };
             print!(".");
             io::stdout().flush()?;
@@ -315,13 +361,118 @@ impl Docx {
             break;
         }
         print!("Getting the size of the first page ... ");
-        self.size = read_svg(images.get(0).ok_or(Error::PDFInvalid)?)?
+        self.size = read_svg(images.first().ok_or(Error::PDFInvalid)?)?
             .svg_node()
             .size;
         println!("Done.");
         print!("Adding all the images ");
         io::stdout().flush()?;
-        images.iter().try_for_each(|i| self.add_image_svg(i))
+        if self.svg_only {
+            images.iter().try_for_each(|i| self.add_image_svg_only(i))
+        } else {
+            images.iter().try_for_each(|i| self.add_image_svg(i))
+        }
+    }
+
+    pub fn convert_typst(&mut self, typst_file: &Path) -> Result<()> {
+        let svg_dir = TempDir::new()?;
+        let png_dir = TempDir::new()?;
+        let svg_pattern = svg_dir.path().join("page-{p}.svg");
+        let png_pattern = if !self.svg_only {
+            Some(png_dir.path().join("page-{p}.png"))
+        } else {
+            None
+        };
+
+        print!("Calling Typst to generate SVGs ... ");
+        io::stdout().flush()?;
+        let output = match Command::new("typst")
+            .arg("compile")
+            .arg("--format")
+            .arg("svg")
+            .arg(typst_file)
+            .arg(&svg_pattern)
+            .output()
+        {
+            Err(e) => {
+                return if let ErrorKind::NotFound = e.kind() {
+                    Err(Error::TypstNotFound)
+                } else {
+                    Err(Error::IoError)
+                };
+            }
+            Ok(output) => output,
+        };
+        if !output.status.success() {
+            return Err(Error::TypstInputInvalid);
+        }
+        println!(" Done.");
+
+        if let Some(png_pattern) = &png_pattern {
+            print!("Calling Typst to generate PNGs ... ");
+            io::stdout().flush()?;
+            let output = match Command::new("typst")
+                .arg("compile")
+                .arg("--format")
+                .arg("png")
+                .arg(typst_file)
+                .arg(png_pattern)
+                .output()
+            {
+                Err(e) => {
+                    return if let ErrorKind::NotFound = e.kind() {
+                        Err(Error::TypstNotFound)
+                    } else {
+                        Err(Error::IoError)
+                    };
+                }
+                Ok(output) => output,
+            };
+            if !output.status.success() {
+                return Err(Error::TypstInputInvalid);
+            }
+            println!(" Done.");
+        }
+
+        let mut pairs: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+        let mut page = 0;
+        loop {
+            page += 1;
+            let svg_path = svg_dir.path().join(format!("page-{}.svg", page));
+            if !svg_path.exists() {
+                break;
+            }
+            let png_path = if png_pattern.is_some() {
+                let p = png_dir.path().join(format!("page-{}.png", page));
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            pairs.push((svg_path, png_path));
+        }
+        if pairs.is_empty() {
+            return Err(Error::TypstInputInvalid);
+        }
+
+        print!("Getting the size of the first page ... ");
+        self.size = read_svg(&pairs[0].0)?.svg_node().size;
+        println!("Done.");
+
+        print!("Adding all the images ");
+        io::stdout().flush()?;
+        if self.svg_only {
+            pairs
+                .iter()
+                .try_for_each(|(svg, _)| self.add_image_svg_only(svg))
+        } else {
+            pairs
+                .iter()
+                .try_for_each(|(svg, png)| self.add_image_with_png(svg, png.as_ref().unwrap()))
+        }
     }
 }
 
@@ -338,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_dir() -> Result<()> {
-        let docx = Docx::new().unwrap();
+        let docx = Docx::new(false).unwrap();
         let dir = docx.dir.path();
         assert!(dir.exists());
         let children = get_children(dir)?;
@@ -356,7 +507,7 @@ mod tests {
 
     #[test]
     fn test_tmp_dir_drop() {
-        let docx = Docx::new().unwrap();
+        let docx = Docx::new(false).unwrap();
         let dir = docx.dir.path();
         let dir_string = String::from(dir.to_str().unwrap());
         drop(docx);
@@ -375,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_add_svg() {
-        let mut docx = Docx::new().unwrap();
+        let mut docx = Docx::new(false).unwrap();
         docx.add_image_svg(&get_test_svg()).unwrap();
         assert_eq!(docx.doc_string,
                    format_xml::xml! {
@@ -441,14 +592,14 @@ mod tests {
 
     #[test]
     fn test_write_to_file() {
-        let mut docx = Docx::new().unwrap();
+        let mut docx = Docx::new(false).unwrap();
         docx.doc_string = String::from("<p></p>");
         docx.write_to_files().unwrap();
     }
 
     #[test]
     fn test_generate_docx() {
-        let mut docx = Docx::new().unwrap();
+        let mut docx = Docx::new(false).unwrap();
         docx.add_image_svg(&get_test_svg()).unwrap();
         docx.generate_docx(&PathBuf::from(get_tests_dir() + "a.docx"))
             .unwrap();

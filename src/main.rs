@@ -14,43 +14,56 @@
    along with docx-you-want.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+use clap::Parser;
 use docx_you_want as dyw;
 use docx_you_want::Error;
-use std::env::args;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 
+#[derive(Parser)]
+#[command(
+    name = "docx-you-want",
+    about = "Convert PDF or Typst documents to DOCX"
+)]
+struct Cli {
+    /// Embed SVG only (skip PNG fallback)
+    #[arg(long)]
+    svg_only: bool,
+
+    /// Path to the input PDF or Typst file
+    input: PathBuf,
+
+    /// Path to the output DOCX file
+    output: PathBuf,
+}
+
 fn main() {
-    let args: Vec<_> = args().collect();
-    if args.len() != 3 {
-        println!(
-            "Usage: {} <path to PDF> <path to result DOCX file>",
-            args[0]
-        );
-        exit(-1)
-    }
-    let src = Path::new(&args[1]);
-    let dst = Path::new(&args[2]);
-    if let Err(e) = convert(src, dst) {
+    let cli = Cli::parse();
+    if let Err(e) = convert(&cli.input, &cli.output, cli.svg_only) {
         let msg = match e {
             Error::IoError => "An error occurred during I/O.",
             Error::ImageError => "Something went wrong while processing the images.",
             Error::InkscapeNotFound => "Inkscape not found. Consider installing inkscape?",
             Error::PDFInvalid => "Invalid PDF.",
+            Error::TypstNotFound => "Typst not found. Consider installing typst?",
+            Error::TypstInputInvalid => "Invalid Typst file or compilation failed.",
         };
         eprint!("{}", msg);
         exit(-1);
     }
 }
 
-fn convert(src: &Path, dst: &Path) -> dyw::Result<()> {
-    let mut docx = dyw::Docx::new()?;
-    docx.convert_pdf(src)?;
+fn convert(src: &Path, dst: &Path, svg_only: bool) -> dyw::Result<()> {
+    let mut docx = dyw::Docx::new(svg_only)?;
+    match src.extension().and_then(|e| e.to_str()) {
+        Some("typ") => docx.convert_typst(src)?,
+        _ => docx.convert_pdf(src)?,
+    }
     println!("Done");
     print!("Generating the final result ... ");
     io::stdout().flush()?;
-    docx.generate_docx(&dst.to_owned())?;
+    docx.generate_docx(dst)?;
     println!("Done.");
     Ok(())
 }
