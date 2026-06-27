@@ -61,16 +61,14 @@ impl From<zip_utils::ZipError> for Error {
     }
 }
 
-fn px_to_emu(px: f32) -> i32 {
-    let dpi = 96.0;
+fn px_to_emu(px: f32, ppi: f32) -> i32 {
     let emus_per_inch = 914400.0;
-    (px / dpi * emus_per_inch) as i32
+    (px / ppi * emus_per_inch) as i32
 }
 
-fn px_to_twenties_of_pt(px: f32) -> i32 {
-    let dpi = 96.0;
+fn px_to_twenties_of_pt(px: f32, ppi: f32) -> i32 {
     let pt_per_inch = 72.0;
-    (px / dpi * pt_per_inch * 20.0) as i32
+    (px / ppi * pt_per_inch * 20.0) as i32
 }
 
 fn get_filename(svg: &Path) -> &str {
@@ -115,10 +113,12 @@ pub struct Docx {
     rels_string: String,
     size: usvg::Size,
     svg_only: bool,
+    ppi: f32,
+    pass_to_typst: Vec<String>,
 }
 
 impl Docx {
-    pub fn new(svg_only: bool) -> Result<Docx> {
+    pub fn new(svg_only: bool, ppi: f32, pass_to_typst: &[String]) -> Result<Docx> {
         let dir = TempDir::new()?;
         Docx::copy_base_files(&dir, svg_only)?;
         let path = dir.path();
@@ -141,6 +141,8 @@ impl Docx {
             rels_string: String::new(),
             size: usvg::Size::from_wh(793.707, 1122.52).unwrap(),
             svg_only,
+            ppi,
+            pass_to_typst: pass_to_typst.to_vec(),
         })
     }
     fn copy_base_files(dir: &TempDir, svg_only: bool) -> Result<()> {
@@ -214,8 +216,8 @@ impl Docx {
         };
         let svg_rid = format!("rId{}", svg_id);
         let png_rid = format!("rId{}", png_id);
-        let width = px_to_emu(size.width());
-        let height = px_to_emu(size.height());
+        let width = px_to_emu(size.width(), self.ppi);
+        let height = px_to_emu(size.height(), self.ppi);
         self.doc_string = format!(
             "{}{}",
             self.doc_string,
@@ -308,11 +310,11 @@ impl Docx {
         let s = read_to_string(&self.doc)?
             .replace(
                 "!WIDTH!",
-                &px_to_twenties_of_pt(self.size.width()).to_string(),
+                &px_to_twenties_of_pt(self.size.width(), self.ppi).to_string(),
             )
             .replace(
                 "!HEIGHT!",
-                &px_to_twenties_of_pt(self.size.height()).to_string(),
+                &px_to_twenties_of_pt(self.size.height(), self.ppi).to_string(),
             );
         write(&self.doc, s)?;
         Ok(())
@@ -382,22 +384,23 @@ impl Docx {
 
         print!("Calling Typst to generate SVGs ... ");
         io::stdout().flush()?;
-        let output = match Command::new("typst")
-            .arg("compile")
-            .arg("--format")
-            .arg("svg")
-            .arg(typst_file)
-            .arg(&svg_pattern)
-            .output()
-        {
-            Err(e) => {
-                return if let ErrorKind::NotFound = e.kind() {
-                    Err(Error::TypstNotFound)
-                } else {
-                    Err(Error::IoError)
-                };
+        let output = {
+            let mut cmd = Command::new("typst");
+            cmd.arg("compile").arg("--format").arg("svg");
+            for arg in &self.pass_to_typst {
+                cmd.arg(arg);
             }
-            Ok(output) => output,
+            cmd.arg(typst_file).arg(&svg_pattern);
+            match cmd.output() {
+                Err(e) => {
+                    return if let ErrorKind::NotFound = e.kind() {
+                        Err(Error::TypstNotFound)
+                    } else {
+                        Err(Error::IoError)
+                    };
+                }
+                Ok(output) => output,
+            }
         };
         if !output.status.success() {
             return Err(Error::TypstInputInvalid);
@@ -407,22 +410,24 @@ impl Docx {
         if let Some(png_pattern) = &png_pattern {
             print!("Calling Typst to generate PNGs ... ");
             io::stdout().flush()?;
-            let output = match Command::new("typst")
-                .arg("compile")
-                .arg("--format")
-                .arg("png")
-                .arg(typst_file)
-                .arg(png_pattern)
-                .output()
-            {
-                Err(e) => {
-                    return if let ErrorKind::NotFound = e.kind() {
-                        Err(Error::TypstNotFound)
-                    } else {
-                        Err(Error::IoError)
-                    };
+            let output = {
+                let mut cmd = Command::new("typst");
+                cmd.arg("compile").arg("--format").arg("png");
+                cmd.arg("--ppi").arg(self.ppi.to_string());
+                for arg in &self.pass_to_typst {
+                    cmd.arg(arg);
                 }
-                Ok(output) => output,
+                cmd.arg(typst_file).arg(png_pattern);
+                match cmd.output() {
+                    Err(e) => {
+                        return if let ErrorKind::NotFound = e.kind() {
+                            Err(Error::TypstNotFound)
+                        } else {
+                            Err(Error::IoError)
+                        };
+                    }
+                    Ok(output) => output,
+                }
             };
             if !output.status.success() {
                 return Err(Error::TypstInputInvalid);
@@ -485,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_dir() -> Result<()> {
-        let docx = Docx::new(false).unwrap();
+        let docx = Docx::new(false, 96.0, &[]).unwrap();
         let dir = docx.dir.path();
         assert!(dir.exists());
         let children = get_children(dir)?;
@@ -503,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_tmp_dir_drop() {
-        let docx = Docx::new(false).unwrap();
+        let docx = Docx::new(false, 96.0, &[]).unwrap();
         let dir = docx.dir.path();
         let dir_string = String::from(dir.to_str().unwrap());
         drop(docx);
@@ -522,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_add_svg() {
-        let mut docx = Docx::new(false).unwrap();
+        let mut docx = Docx::new(false, 96.0, &[]).unwrap();
         docx.add_image_svg(&get_test_svg()).unwrap();
         assert_eq!(docx.doc_string,
                    format_xml::xfmt! {
@@ -588,14 +593,14 @@ mod tests {
 
     #[test]
     fn test_write_to_file() {
-        let mut docx = Docx::new(false).unwrap();
+        let mut docx = Docx::new(false, 96.0, &[]).unwrap();
         docx.doc_string = String::from("<p></p>");
         docx.write_to_files().unwrap();
     }
 
     #[test]
     fn test_generate_docx() {
-        let mut docx = Docx::new(false).unwrap();
+        let mut docx = Docx::new(false, 96.0, &[]).unwrap();
         docx.add_image_svg(&get_test_svg()).unwrap();
         docx.generate_docx(&PathBuf::from(get_tests_dir() + "a.docx"))
             .unwrap();
@@ -603,6 +608,6 @@ mod tests {
 
     #[test]
     fn test_size() {
-        assert_eq!(px_to_twenties_of_pt(793.707), 11905)
+        assert_eq!(px_to_twenties_of_pt(793.707, 96.0), 11905)
     }
 }

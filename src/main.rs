@@ -27,9 +27,17 @@ use std::process::exit;
     about = "Convert PDF or Typst documents to DOCX"
 )]
 struct Cli {
+    /// Pixels Per Inch for DOCX page size calculation (default: 96)
+    #[arg(long, short = 'p', default_value_t = 96.0)]
+    ppi: f32,
+
     /// Embed SVG only (skip PNG fallback)
-    #[arg(long)]
+    #[arg(long, short = 'S')]
     svg_only: bool,
+
+    /// Extra arguments to pass through to the `typst compile` command
+    #[arg(long)]
+    pass_to_typst: Vec<String>,
 
     /// Path to the input PDF or Typst file
     input: PathBuf,
@@ -40,7 +48,13 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(e) = convert(&cli.input, &cli.output, cli.svg_only) {
+    if let Err(e) = convert(
+        &cli.input,
+        &cli.output,
+        cli.svg_only,
+        cli.ppi,
+        &cli.pass_to_typst,
+    ) {
         let msg = match e {
             Error::IoError => "An error occurred during I/O.",
             Error::ImageError => "Something went wrong while processing the images.",
@@ -54,8 +68,14 @@ fn main() {
     }
 }
 
-fn convert(src: &Path, dst: &Path, svg_only: bool) -> dyw::Result<()> {
-    let mut docx = dyw::Docx::new(svg_only)?;
+fn convert(
+    src: &Path,
+    dst: &Path,
+    svg_only: bool,
+    ppi: f32,
+    pass_to_typst: &[String],
+) -> dyw::Result<()> {
+    let mut docx = dyw::Docx::new(svg_only, ppi, pass_to_typst)?;
     match src.extension().and_then(|e| e.to_str()) {
         Some("typ") => docx.convert_typst(src)?,
         _ => docx.convert_pdf(src)?,
