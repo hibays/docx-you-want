@@ -61,13 +61,13 @@ impl From<zip_utils::ZipError> for Error {
     }
 }
 
-fn px_to_emu(px: f64) -> i32 {
+fn px_to_emu(px: f32) -> i32 {
     let dpi = 96.0;
     let emus_per_inch = 914400.0;
     (px / dpi * emus_per_inch) as i32
 }
 
-fn px_to_twenties_of_pt(px: f64) -> i32 {
+fn px_to_twenties_of_pt(px: f32) -> i32 {
     let dpi = 96.0;
     let pt_per_inch = 72.0;
     (px / dpi * pt_per_inch * 20.0) as i32
@@ -80,20 +80,18 @@ fn get_filename(svg: &Path) -> &str {
 fn read_svg(src: &Path) -> Result<usvg::Tree> {
     let opt = usvg::Options::default();
     let svg_data = std::fs::read(src)?;
-    Ok(usvg::Tree::from_data(&svg_data, &opt.to_ref())?)
+    Ok(usvg::Tree::from_data(&svg_data, &opt)?)
 }
 
 fn save_png(dst: &Path, rtree: &usvg::Tree) -> Result<()> {
-    let size = rtree.svg_node().size.to_screen_size();
+    let size = rtree.size().to_int_size();
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
     resvg::render(
         rtree,
-        usvg::FitTo::Original,
         tiny_skia::Transform::identity(),
-        pixmap.as_mut(),
-    )
-    .ok_or(Error::ImageError)?;
-    let _ = pixmap.save_png(dst);
+        &mut pixmap.as_mut(),
+    );
+    pixmap.save_png(dst)?;
     Ok(())
 }
 
@@ -141,7 +139,7 @@ impl Docx {
             next_id: 0,
             doc_string: String::new(),
             rels_string: String::new(),
-            size: usvg::Size::new(793.707, 1122.52).unwrap(),
+            size: usvg::Size::from_wh(793.707, 1122.52).unwrap(),
             svg_only,
         })
     }
@@ -165,7 +163,7 @@ impl Docx {
         if svg != svg_copy {
             copy(svg, svg_copy)?;
         }
-        self.add_to_doc(svg_copy, Some(&png), &tree.svg_node().size);
+        self.add_to_doc(svg_copy, Some(&png), &tree.size());
         print!(".");
         io::stdout().flush()?;
         Ok(())
@@ -181,7 +179,7 @@ impl Docx {
         if svg != svg_copy {
             copy(svg, svg_copy)?;
         }
-        self.add_to_doc(svg_copy, Some(&png_dst), &tree.svg_node().size);
+        self.add_to_doc(svg_copy, Some(&png_dst), &tree.size());
         print!(".");
         io::stdout().flush()?;
         Ok(())
@@ -195,7 +193,7 @@ impl Docx {
         if svg != svg_copy {
             copy(svg, svg_copy)?;
         }
-        self.add_to_doc(svg_copy, None, &tree.svg_node().size);
+        self.add_to_doc(svg_copy, None, &tree.size());
         print!(".");
         io::stdout().flush()?;
         Ok(())
@@ -221,7 +219,7 @@ impl Docx {
         self.doc_string = format!(
             "{}{}",
             self.doc_string,
-            format_xml::xml! {
+            format_xml::xfmt! {
               <w:p>
                 <w:pPr>
                     <w:widowControl/>
@@ -287,7 +285,7 @@ impl Docx {
         self.rels_string = format!(
             "{}{}",
             self.rels_string,
-            format_xml::xml! {
+            format_xml::xfmt! {
                 <Relationship Id={rid} Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target={target}/>
             }
         )
@@ -361,9 +359,7 @@ impl Docx {
             break;
         }
         print!("Getting the size of the first page ... ");
-        self.size = read_svg(images.first().ok_or(Error::PDFInvalid)?)?
-            .svg_node()
-            .size;
+        self.size = read_svg(images.first().ok_or(Error::PDFInvalid)?)?.size();
         println!("Done.");
         print!("Adding all the images ");
         io::stdout().flush()?;
@@ -459,7 +455,7 @@ impl Docx {
         }
 
         print!("Getting the size of the first page ... ");
-        self.size = read_svg(&pairs[0].0)?.svg_node().size;
+        self.size = read_svg(&pairs[0].0)?.size();
         println!("Done.");
 
         print!("Adding all the images ");
@@ -529,7 +525,7 @@ mod tests {
         let mut docx = Docx::new(false).unwrap();
         docx.add_image_svg(&get_test_svg()).unwrap();
         assert_eq!(docx.doc_string,
-                   format_xml::xml! {
+                   format_xml::xfmt! {
 <w:p>
     <w:pPr>
         <w:widowControl />
@@ -584,7 +580,7 @@ mod tests {
 </w:p>
             }.to_string());
         assert_eq!(docx.rels_string,
-                   format_xml::xml! {
+                   format_xml::xfmt! {
 <Relationship Id="rId0" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/2.svg" />
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/2.png" />
             }.to_string())

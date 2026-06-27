@@ -8,11 +8,11 @@ license = "GPL3"
 
 [dependencies]
 tempfile = "3"
-resvg = "0.22"
-usvg = "0.22"
-tiny-skia = "0.6.2"
+resvg = "0.47"
+usvg = "0.47"
+tiny-skia = "0.12"
 png = "0.18"
-format_xml = "0.2.0"
+format_xml = "0.3"
 zip = { version = "8", default-features = false, features = [
 	"deflate",
 	"time",
