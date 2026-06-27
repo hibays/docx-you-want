@@ -24,6 +24,7 @@ use std::process::Command;
 use tempfile::TempDir;
 mod zip_utils;
 use zip_utils::{unzip_to_dir, zip_dir};
+use resvg::tiny_skia;
 
 #[derive(Debug)]
 pub enum Error {
@@ -161,6 +162,7 @@ impl Docx {
     }
 
     fn add_image_svg(&mut self, svg: &Path) -> Result<()> {
+        // Auto render png from svg and embed in docx
         let tree = read_svg(svg)?;
         let png = get_png_path(&self.media_dir, svg)?;
         save_png(&png, &tree, self.ppi)?;

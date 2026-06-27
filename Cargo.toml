@@ -10,7 +10,6 @@ license = "GPL3"
 tempfile = "3"
 resvg = "0.47"
 usvg = "0.47"
-tiny-skia = "0.12"
 png = "0.18"
 format_xml = "0.3"
 zip = { version = "8", default-features = false, features = [

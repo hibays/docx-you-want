@@ -203,7 +203,6 @@ dependencies = [
  "png",
  "resvg",
  "tempfile",
- "tiny-skia",
  "usvg",
  "walkdir",
  "zip",
