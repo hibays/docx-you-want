@@ -61,14 +61,16 @@ impl From<zip_utils::ZipError> for Error {
     }
 }
 
-fn px_to_emu(px: f32, ppi: f32) -> i32 {
+fn px_to_emu(px: f32) -> i32 {
+    let dpi = 96.0;
     let emus_per_inch = 914400.0;
-    (px / ppi * emus_per_inch) as i32
+    (px / dpi * emus_per_inch) as i32
 }
 
-fn px_to_twenties_of_pt(px: f32, ppi: f32) -> i32 {
+fn px_to_twenties_of_pt(px: f32) -> i32 {
+    let dpi = 96.0;
     let pt_per_inch = 72.0;
-    (px / ppi * pt_per_inch * 20.0) as i32
+    (px / dpi * pt_per_inch * 20.0) as i32
 }
 
 fn get_filename(svg: &Path) -> &str {
@@ -81,12 +83,14 @@ fn read_svg(src: &Path) -> Result<usvg::Tree> {
     Ok(usvg::Tree::from_data(&svg_data, &opt)?)
 }
 
-fn save_png(dst: &Path, rtree: &usvg::Tree) -> Result<()> {
-    let size = rtree.size().to_int_size();
-    let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+fn save_png(dst: &Path, rtree: &usvg::Tree, ppi: f32) -> Result<()> {
+    let scale = ppi / 96.0;
+    let w = (rtree.size().width() * scale) as u32;
+    let h = (rtree.size().height() * scale) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
     resvg::render(
         rtree,
-        tiny_skia::Transform::identity(),
+        tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
     pixmap.save_png(dst)?;
@@ -145,6 +149,7 @@ impl Docx {
             pass_to_typst: pass_to_typst.to_vec(),
         })
     }
+    
     fn copy_base_files(dir: &TempDir, svg_only: bool) -> Result<()> {
         let fixtures_zip: &[u8] = if svg_only {
             include_bytes!("../fixtures/fixtures_svg_only.zip")
@@ -158,7 +163,7 @@ impl Docx {
     fn add_image_svg(&mut self, svg: &Path) -> Result<()> {
         let tree = read_svg(svg)?;
         let png = get_png_path(&self.media_dir, svg)?;
-        save_png(&png, &tree)?;
+        save_png(&png, &tree, self.ppi)?;
         let svg_copy = &self
             .media_dir
             .join(Path::new(svg.file_name().ok_or(Error::IoError)?));
@@ -216,8 +221,8 @@ impl Docx {
         };
         let svg_rid = format!("rId{}", svg_id);
         let png_rid = format!("rId{}", png_id);
-        let width = px_to_emu(size.width(), self.ppi);
-        let height = px_to_emu(size.height(), self.ppi);
+        let width = px_to_emu(size.width());
+        let height = px_to_emu(size.height());
         self.doc_string = format!(
             "{}{}",
             self.doc_string,
@@ -310,11 +315,11 @@ impl Docx {
         let s = read_to_string(&self.doc)?
             .replace(
                 "!WIDTH!",
-                &px_to_twenties_of_pt(self.size.width(), self.ppi).to_string(),
+                &px_to_twenties_of_pt(self.size.width()).to_string(),
             )
             .replace(
                 "!HEIGHT!",
-                &px_to_twenties_of_pt(self.size.height(), self.ppi).to_string(),
+                &px_to_twenties_of_pt(self.size.height()).to_string(),
             );
         write(&self.doc, s)?;
         Ok(())
@@ -608,6 +613,6 @@ mod tests {
 
     #[test]
     fn test_size() {
-        assert_eq!(px_to_twenties_of_pt(793.707, 96.0), 11905)
+        assert_eq!(px_to_twenties_of_pt(793.707), 11905)
     }
 }
